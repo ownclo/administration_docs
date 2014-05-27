@@ -1,3 +1,79 @@
+ормулировка задания, общее описание решения
+============================================
+
+Реализовать настройку операционной системы linux ubuntu включая:
+
+- веб-сервер и балансировщик: nginx (front end), apache (back end)
+- виртуальные домены (2 шт.)
+- песочница (sandbox), 3 шт. 
+- бд (MySQL, mariaDB или др., на выбор) и настройки веб серверов изолированы в песочницах
+- https-двустороняя аутентификация на nginx для двух сайта, рутовые сертификаты каждого сайта лежат в отдельном месте в отдельных песочнице (этап 1: аутентификация для одного сайта, этап 2: полное задание
+- vpn-сервер (открытый, openvpn например) и настроить клиент-серверную аутентификацию
+
+Была организована следующая схема: каждый сайт лежит в отдельной
+песочнице (`chroot`-окружении), в котором установлены `apache2`
+и все необходимые для непосредственной работы сайта приложения
+(e.g. СУБД). Каждый `apache2`-демон слушает отдельный закрытый
+порт. На верхнем уровне устанвлен `nginx`, проксирующий входящие
+соединения по доменному имени на соответствующие порты. Далее
+приведены более подробные инструкци по настройке элементов данной
+архитектуры.
+
+Nginx в роли https-прокси
+=========================
+
+Для настройки nginx в роли прокси создайте файл (`/etc/nginx/sites-available/second.ru`)
+с настройками соответствующего сайта:
+
+
+    upstream backend_second {
+      server 127.0.0.1:8181;
+    }
+
+    server {
+      listen 80;
+      server_name www.second.ru second.ru;
+
+      access_log /home/ownclo/web/second/nginx_access.log;
+      error_log /home/ownclo/web/second/nginx_error.log;
+
+      # redirect to back-end
+      location / {
+        proxy_pass http://backend_second;
+        include /etc/nginx/proxy_params;
+      }
+    }
+
+    server {
+      listen 443;
+      server_name www.second.ru second.ru;
+
+      ssl on;
+      ssl_certificate /home/ownclo/web/second/box/etc/ssl/certs/second.crt;
+      ssl_certificate_key /home/ownclo/web/second/box/etc/ssl/private/second.key;
+
+      access_log /home/ownclo/web/second/nginx_ssl_access.log;
+      error_log /home/ownclo/web/second/nginx_ssl_error.log;
+
+      location / {
+        proxy_pass http://backend_second;
+        include /etc/nginx/proxy_params;
+      }
+    }
+
+
+Здесь осуществляется настройка nginx следующим образом: при запросе по
+адресу `second.ru` перенаправлять на бэкэнд. Отвечать и на HTTP (порт 80),
+и на HTTPS (порт 443). Для активации данного сайта слинкуйте конфигурационный
+файл в папку `sites-enabled`:
+
+    $ sudo ln -s /etc/nginx/sites-available/second.ru /etc/nginx/sites-enabled/
+    $ sudo process restart nginx
+
+В этом же конфигурационном файле можно добавить и инструкции по отдаче
+статического контента (`*.jpg` etc.) и таким образом превратить nginx
+в кэширующий прокси.
+
 Chroot-окружения в роли "песочниц"
 ==================================
 
@@ -88,3 +164,33 @@ Chroot-окружения в роли "песочниц"
 `schroot` удобно использовать для пробрасывания конфигов, установки
 пакетов и т.п., потому что можно оставаться в родительском дереве
 каталогов, устанавливая всё необходимое в песочницу.
+
+
+Apache2 в роли backend-а
+========================
+
+Для создания виртуального домена создаём файл со следующими параметрами
+(`/etc/apache2/sites-available/second.ru` в песочнице):
+
+    <VirtualHost *:8181>
+      ServerName www.second.ru
+      ServerAlias second.ru
+
+      DocumentRoot /var/www/
+      <Directory /var/www/>
+        Order allow,deny
+        Allow from all
+      </Directory>
+
+      LogLevel warn
+      ErrorLog /home/apache_error.log
+      CustomLog /home/apache_access.log combined
+    /VirtualHost>
+
+Теперь необходимо подключить данный сайт (в песочнице):
+
+    # a2ensite second.ru
+    # process apache2 restart
+
+Заметьте, что в конфиге apache указан тот же самый порт, что
+и в адресе проксирования `nginx`.
